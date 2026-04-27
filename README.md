@@ -1,4 +1,4 @@
-# LSFG-Android
+# LSFG-Android-Application
 
 The Android app that drives the patched [`lsfg-vk-android`](../lsfg-vk-android/)
 framegen library. It picks up a user-supplied `Lossless.dll`, extracts the
@@ -168,7 +168,7 @@ deleted after extraction.
 ## Project layout
 
 ```
-LSFG-Android/                       # Android Studio project root
+LSFG-Android-Application/                       # Android Studio project root
   app/
     src/main/
       java/com/lsfg/android/
@@ -215,7 +215,7 @@ LSFG-Android/                       # Android Studio project root
 ## Build
 
 ```sh
-cd LSFG-Android        # this directory
+cd LSFG-Android-Application        # this directory
 ./gradlew :app:assembleDebug         # or :app:assembleRelease
 ```
 
@@ -293,7 +293,7 @@ hidden because the pipelines still need to be wired up and tuned end-to-end:
 
 ## License
 
-This app — that is, everything inside the `LSFG-Android/` directory — is
+This app — that is, everything inside the `LSFG-Android-Application/` directory — is
 released under a **Custom License: No Play Store, No Commercial Use**. See
 [`LICENSE`](LICENSE) in this directory for the full terms. In short:
 

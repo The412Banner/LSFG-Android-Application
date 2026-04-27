@@ -1,9 +1,9 @@
-LSFG-Android — Custom License (No Play Store, No Commercial Use)
+LSFG-Android-Application — Custom License (No Play Store, No Commercial Use)
 
 Copyright (c) 2026 FrankBarretta
     https://github.com/FrankBarretta/LSFG-Android
 
-This license applies ONLY to the contents of the `LSFG-Android/` directory
+This license applies ONLY to the contents of the `LSFG-Android-Application/` directory
 (the Android Studio project: Kotlin/Compose UI, JNI bridge, native C++ glue
 in `app/src/main/cpp/` excluding the `lsfg-vk-android/` submodule, AIDL,
 resources, build scripts, and any other source authored as part of the
@@ -63,13 +63,7 @@ obtaining a copy of this software and the associated documentation files
      Non-commercial personal use, academic research, security research, and
      non-monetized hobbyist redistribution remain permitted.
 
-  c. NO TRADEMARK / IDENTITY MISUSE.
-     This license does not grant permission to use the names "LSFG-Android",
-     "LSFG", "Lossless Scaling", or the names of any contributor to endorse
-     or promote products derived from the Software without prior written
-     permission from the respective rights holder.
-
-  d. NO BUNDLING OF PROPRIETARY ASSETS.
+  c. NO BUNDLING OF PROPRIETARY ASSETS.
      The Software does not include and has never included `Lossless.dll` or
      any extracted Lossless Scaling shaders. Distributing the Software with
      `Lossless.dll`, with shaders extracted from `Lossless.dll`, or with any
