@@ -1,0 +1,116 @@
+LSFG-Android — Custom License (No Play Store, No Commercial Use)
+
+Copyright (c) 2026 FrankBarretta
+    https://github.com/FrankBarretta/LSFG-Android
+
+This license applies ONLY to the contents of the `LSFG-Android/` directory
+(the Android Studio project: Kotlin/Compose UI, JNI bridge, native C++ glue
+in `app/src/main/cpp/` excluding the `lsfg-vk-android/` submodule, AIDL,
+resources, build scripts, and any other source authored as part of the
+LSFG-Android Android app).
+
+The `lsfg-vk-android/` submodule one directory above is licensed separately
+under the MIT License — see `../lsfg-vk-android/LICENSE.md`. The root of the
+overall repository is licensed under the MIT License — see `../LICENSE`.
+This Custom License does NOT extend to either of those.
+
+================================================================================
+
+1. PERMITTED USE
+
+Subject to all terms below, permission is hereby granted to any person
+obtaining a copy of this software and the associated documentation files
+(the "Software") to:
+
+  a. use the Software for personal, non-commercial purposes;
+  b. study and modify the Software for personal, non-commercial purposes;
+  c. distribute unmodified or modified copies of the Software in source or
+     binary form, provided that this entire license text and the copyright
+     notice above are reproduced in full in all copies or substantial
+     portions of the Software, and provided that distribution complies with
+     the restrictions in section 2.
+
+2. RESTRICTIONS
+
+  a. NO PLAY STORE / NO APP STORE DISTRIBUTION.
+     The Software, in whole or in part, in source or compiled form, with or
+     without modification, MAY NOT be published, listed, distributed, or
+     made available for download on:
+       - the Google Play Store,
+       - the Apple App Store,
+       - the Amazon Appstore,
+       - the Samsung Galaxy Store,
+       - the Huawei AppGallery,
+       - or any other commercial or curated mobile application marketplace.
+     Sideload distribution (direct APK download from a personal website,
+     GitHub release, F-Droid-style open repository, or peer-to-peer transfer)
+     is permitted within the limits of section 2.b.
+
+  b. NO COMMERCIAL USE.
+     The Software MAY NOT be used, sold, sublicensed, hosted, or otherwise
+     exploited for commercial gain. In particular:
+       - no fee may be charged for the Software itself or for access to it,
+         including indirect fees such as paywalls, subscriptions, or
+         "premium" tiers gating any part of its functionality;
+       - the Software may not be bundled with, embedded in, or shipped as
+         part of any paid product, paid service, paid SDK, or paid game;
+       - the Software may not be used to provide a paid service to third
+         parties (including but not limited to "frame generation as a
+         service" offerings);
+       - advertising, sponsorship, affiliate links, donation walls, or any
+         monetization placed inside the Software or required to obtain it
+         is not permitted.
+     Non-commercial personal use, academic research, security research, and
+     non-monetized hobbyist redistribution remain permitted.
+
+  c. NO TRADEMARK / IDENTITY MISUSE.
+     This license does not grant permission to use the names "LSFG-Android",
+     "LSFG", "Lossless Scaling", or the names of any contributor to endorse
+     or promote products derived from the Software without prior written
+     permission from the respective rights holder.
+
+  d. NO BUNDLING OF PROPRIETARY ASSETS.
+     The Software does not include and has never included `Lossless.dll` or
+     any extracted Lossless Scaling shaders. Distributing the Software with
+     `Lossless.dll`, with shaders extracted from `Lossless.dll`, or with any
+     other proprietary Lossless Scaling asset is NOT permitted under this
+     license and is independently prohibited by the rights of THS / Lossless
+     Scaling.
+
+3. UPSTREAM AND THIRD-PARTY COMPONENTS
+
+This license does not apply to, override, or restrict the upstream
+[`lsfg-vk`](https://github.com/PancakeTAS/lsfg-vk) project (MIT-licensed),
+the patched submodule at `../lsfg-vk-android/` (MIT-licensed), or any
+third-party library used by the build (`volk`, `pe-parse`, DXVK's `dxbc`
+translator, the Shizuku API, AndroidX, etc.), each of which retains its
+own license. Use, modification, and redistribution of those components
+continue to be governed by their respective licenses.
+
+4. ATTRIBUTION
+
+Any redistribution — modified or unmodified, in source or binary form —
+must:
+  - reproduce this license text in full;
+  - retain the copyright notice above;
+  - retain the upstream `lsfg-vk` attribution and the LSFG-Android port
+    attribution;
+  - clearly identify modifications, if any, as such (without implying
+    endorsement by the original author).
+
+5. DISCLAIMER
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+6. ACCEPTANCE
+
+By using, copying, modifying, or distributing the Software (or any portion
+of it) you accept and agree to be bound by the terms of this license. If
+you do not accept these terms, you must not use, copy, modify, or
+distribute the Software.
