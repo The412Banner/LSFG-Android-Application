@@ -55,13 +55,14 @@ class RootCaptureService : RootService() {
             periodMs: Long,
             callback: IShizukuFrameCallback,
         ) {
-            val capture = runCatching { PrivilegedScreenCapture(width, height, targetUid) }
-                .getOrElse { e ->
-                    Log.w(TAG, "Unable to initialize privileged capture", e)
-                    callback.onError("Root capture unavailable: ${e.message ?: e.javaClass.simpleName}")
-                    running.set(false)
-                    return
-                }
+            val capture = runCatching {
+                PrivilegedScreenCapture(width, height, targetUid, allowNoUidFilter = true)
+            }.getOrElse { e ->
+                Log.w(TAG, "Unable to initialize privileged capture", e)
+                callback.onError("Root capture unavailable: ${e.message ?: e.javaClass.simpleName}")
+                running.set(false)
+                return
+            }
 
             var lastFrameNs = 0L
             val targetPeriodNs = periodMs * 1_000_000L
