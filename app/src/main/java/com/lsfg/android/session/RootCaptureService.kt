@@ -1,5 +1,7 @@
 package com.lsfg.android.session
 
+import android.graphics.Bitmap
+import android.hardware.HardwareBuffer
 import android.content.Intent
 import android.os.IBinder
 import android.os.SystemClock
@@ -55,13 +57,28 @@ class RootCaptureService : RootService() {
             periodMs: Long,
             callback: IShizukuFrameCallback,
         ) {
-            val capture = runCatching {
+            var privilegedError: String? = null
+            val captureFrame: () -> HardwareBuffer?
+
+            val privileged = runCatching {
                 PrivilegedScreenCapture(width, height, targetUid, allowNoUidFilter = true)
             }.getOrElse { e ->
-                Log.w(TAG, "Unable to initialize privileged capture", e)
-                callback.onError("Root capture unavailable: ${e.message ?: e.javaClass.simpleName}")
-                running.set(false)
-                return
+                privilegedError = e.message ?: e.javaClass.simpleName
+                null
+            }
+
+            if (privileged != null) {
+                captureFrame = { privileged.captureHardwareBuffer() }
+            } else {
+                val bitmapFn = buildBitmapCaptureFn(width, height)
+                if (bitmapFn != null) {
+                    Log.i(TAG, "PrivilegedScreenCapture unavailable ($privilegedError); using SurfaceControl.screenshot() fallback")
+                    captureFrame = bitmapFn
+                } else {
+                    callback.onError("Root capture unavailable: $privilegedError; SurfaceControl.screenshot() not found")
+                    running.set(false)
+                    return
+                }
             }
 
             var lastFrameNs = 0L
@@ -69,9 +86,9 @@ class RootCaptureService : RootService() {
             var frameLogCount = 0
             while (running.get()) {
                 val started = SystemClock.uptimeMillis()
-                val hb = runCatching { capture.captureHardwareBuffer() }
+                val hb = runCatching { captureFrame() }
                     .onFailure {
-                        Log.w(TAG, "captureHardwareBuffer failed", it)
+                        Log.w(TAG, "captureFrame failed", it)
                         callback.onError("Root capture failed: ${it.message ?: it.javaClass.simpleName}")
                     }
                     .getOrNull()
@@ -104,6 +121,54 @@ class RootCaptureService : RootService() {
                     } catch (_: InterruptedException) {
                         break
                     }
+                }
+            }
+        }
+
+        /**
+         * Fallback for devices where PrivilegedScreenCapture fails — uses the legacy
+         * android.view.SurfaceControl.screenshot() hidden API which takes no display token
+         * and works from root UID. The software Bitmap is promoted to a hardware-backed
+         * HardwareBuffer so the native pipeline can consume it normally.
+         */
+        private fun buildBitmapCaptureFn(width: Int, height: Int): (() -> HardwareBuffer?)? {
+            val cls = runCatching { Class.forName("android.view.SurfaceControl") }.getOrNull()
+                ?: return null
+            val all = (cls.methods.asSequence() + cls.declaredMethods.asSequence()).distinct()
+
+            // Prefer 2-arg (int,int) form; accept 5-arg or 7-arg overloads as fallback
+            val method = all
+                .filter { it.name == "screenshot" }
+                .sortedBy { it.parameterTypes.size }
+                .firstOrNull { m ->
+                    val p = m.parameterTypes
+                    (p.size == 2 && p.all { it == Int::class.java }) || p.size == 5 || p.size == 7
+                }
+                ?.also { it.isAccessible = true }
+                ?: return null
+
+            Log.i(TAG, "SurfaceControl.screenshot fallback: ${method.name}(${method.parameterTypes.joinToString { it.simpleName }})")
+
+            return fn@{
+                try {
+                    val bitmap: Bitmap? = when (method.parameterTypes.size) {
+                        2 -> method.invoke(null, width, height) as? Bitmap
+                        5 -> method.invoke(null, null, width, height, false, 0) as? Bitmap
+                        7 -> method.invoke(null, null, width, height, 0, Int.MAX_VALUE, false, 0) as? Bitmap
+                        else -> null
+                    }
+                    if (bitmap == null || bitmap.isRecycled) {
+                        bitmap?.recycle()
+                        return@fn null
+                    }
+                    val hw = bitmap.copy(Bitmap.Config.HARDWARE, false)
+                    bitmap.recycle()
+                    val hb = hw?.hardwareBuffer
+                    hw?.recycle()
+                    hb
+                } catch (e: Exception) {
+                    Log.w(TAG, "SurfaceControl.screenshot() threw", e)
+                    null
                 }
             }
         }
