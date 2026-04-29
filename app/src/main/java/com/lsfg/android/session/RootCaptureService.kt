@@ -65,7 +65,11 @@ class RootCaptureService : RootService() {
             var captureCleanup: (() -> Unit) = {}
 
             val privileged = runCatching {
-                PrivilegedScreenCapture(width, height, targetUid, allowNoUidFilter = true)
+                PrivilegedScreenCapture(
+                    width, height, targetUid,
+                    allowNoUidFilter = true,
+                    context = this@RootCaptureService,
+                )
             }.getOrElse { e ->
                 privilegedError = e.message ?: e.javaClass.simpleName
                 null

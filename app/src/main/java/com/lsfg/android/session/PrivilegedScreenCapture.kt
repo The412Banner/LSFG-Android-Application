@@ -1,7 +1,9 @@
 package com.lsfg.android.session
 
+import android.content.Context
 import android.graphics.PixelFormat
 import android.hardware.HardwareBuffer
+import android.hardware.display.DisplayManager
 import android.os.IBinder
 import android.util.Log
 import android.view.Display
@@ -17,12 +19,17 @@ import java.lang.reflect.Method
  * With [allowNoUidFilter]=true (root): falls back to full-display capture if UID-filtered
  * APIs are unavailable. Also attempts setCaptureSecureLayers to bypass FLAG_SECURE.
  * Requires root UID for the secure-layer path to be honoured by SurfaceFlinger.
+ *
+ * [context]: optional Android Context used to obtain a [Display] object whose internal
+ * mToken IBinder field is the display token required by DisplayCaptureArgs.Builder.
+ * Providing a Context significantly improves token discovery on Android 14+ ROMs.
  */
 internal class PrivilegedScreenCapture(
     width: Int,
     height: Int,
     targetUid: Int,
     private val allowNoUidFilter: Boolean = false,
+    private val context: Context? = null,
 ) {
     private val captureDisplay: Method
     private val args: Any
@@ -72,10 +79,15 @@ internal class PrivilegedScreenCapture(
         val builder = createDisplayCaptureArgsBuilder(captureClassName, builderClass)
         invokeOptional(builderClass, builder, "setSize", intArrayOf(width, height))
         invokeOptional(builderClass, builder, "setPixelFormat", intArrayOf(PixelFormat.RGBA_8888))
-        if (!invokeSetUid(builderClass, builder, targetUid.toLong())) {
+        if (invokeSetUid(builderClass, builder, targetUid.toLong())) {
+            if (allowNoUidFilter) {
+                // Root context: also capture FLAG_SECURE layers owned by the target UID
+                // (e.g. games like Genshin Impact). SurfaceFlinger only honours this from root.
+                invokeOptionalBool(builderClass, builder, "setCaptureSecureLayers", true)
+            }
+        } else {
             if (requireUidFilter) throw IllegalStateException("setUid not found in $captureClassName")
             Log.i(TAG, "No setUid in $captureClassName — full-display capture mode")
-            // From root UID, try to capture secure (FLAG_SECURE) layers too
             invokeOptionalBool(builderClass, builder, "setCaptureSecureLayers", true)
         }
         val builtArgs = builderClass.getMethod("build").invoke(builder)
@@ -149,6 +161,9 @@ internal class PrivilegedScreenCapture(
     }
 
     private fun findDisplayToken(): IBinder {
+        context?.let { ctx ->
+            findDisplayTokenFromDisplayObject(ctx)?.let { return it }
+        }
         findDisplayTokenFromDisplayManagerGlobal()?.let { return it }
         findDisplayTokenFromDisplayService()?.let { return it }
 
@@ -159,6 +174,40 @@ internal class PrivilegedScreenCapture(
             findDisplayTokenFromClass(className, cls)?.let { return it }
         }
         throw IllegalStateException("No display token API is available")
+    }
+
+    /**
+     * Gets the display token directly from [android.view.Display.mToken].
+     * The Display object holds the exact IBinder that SurfaceFlinger uses to identify the
+     * physical display — the same token required by DisplayCaptureArgs.Builder.
+     * From root UID, reflection access to this internal field is typically granted even on
+     * Android 14 where @UnsupportedAppUsage normally blocks it.
+     */
+    private fun findDisplayTokenFromDisplayObject(ctx: Context): IBinder? {
+        return runCatching {
+            val dm = ctx.getSystemService(DisplayManager::class.java) ?: return@runCatching null
+            val display = dm.getDisplay(Display.DEFAULT_DISPLAY) ?: return@runCatching null
+            // Enumerate all IBinder fields in the Display class; mToken is the display token.
+            val token = (display.javaClass.declaredFields.asSequence() +
+                         display.javaClass.fields.asSequence())
+                .distinct()
+                .filter { IBinder::class.java.isAssignableFrom(it.type) }
+                .firstNotNullOfOrNull { field ->
+                    runCatching {
+                        field.isAccessible = true
+                        field.get(display) as? IBinder
+                    }.getOrNull()
+                }
+            if (token != null) {
+                val fieldName = (display.javaClass.declaredFields.asSequence() +
+                                 display.javaClass.fields.asSequence())
+                    .distinct()
+                    .firstOrNull { IBinder::class.java.isAssignableFrom(it.type) }?.name
+                Log.i(TAG, "Display token from Display.$fieldName")
+            }
+            token
+        }.onFailure { Log.w(TAG, "Display IBinder field unavailable: ${it.message}") }
+            .getOrNull()
     }
 
     private fun findDisplayTokenFromDisplayManagerGlobal(): IBinder? {
