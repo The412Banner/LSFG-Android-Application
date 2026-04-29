@@ -88,9 +88,13 @@ internal class PrivilegedScreenCapture(
     }
 
     private fun createDisplayCaptureArgsBuilder(captureClassName: String, builderClass: Class<*>): Any {
-        val constructors = builderClass.declaredConstructors
+        val constructors = (builderClass.declaredConstructors.asSequence() +
+            builderClass.constructors.asSequence()).distinct().toList()
         constructors.forEach { it.isAccessible = true }
 
+        var tokenError: String? = null
+
+        // IBinder constructor with real display token
         constructors.filter { ctor ->
             ctor.parameterTypes.size == 1 && IBinder::class.java.isAssignableFrom(ctor.parameterTypes[0])
         }.forEach { ctor ->
@@ -98,9 +102,13 @@ internal class PrivilegedScreenCapture(
                 val displayToken = findDisplayToken()
                 Log.i(TAG, "$captureClassName builder: using IBinder display token")
                 return ctor.newInstance(displayToken)
-            }.onFailure { Log.w(TAG, "$captureClassName IBinder builder unavailable", it) }
+            }.onFailure {
+                tokenError = it.message
+                Log.w(TAG, "$captureClassName IBinder builder unavailable", it)
+            }
         }
 
+        // int display-ID constructor
         constructors.filter { ctor ->
             ctor.parameterTypes.size == 1 && ctor.parameterTypes[0] == Int::class.javaPrimitiveType
         }.forEach { ctor ->
@@ -110,6 +118,7 @@ internal class PrivilegedScreenCapture(
             }.onFailure { Log.w(TAG, "$captureClassName int-id builder unavailable", it) }
         }
 
+        // no-arg constructor
         constructors.filter { ctor ->
             ctor.parameterTypes.isEmpty()
         }.forEach { ctor ->
@@ -119,11 +128,23 @@ internal class PrivilegedScreenCapture(
             }.onFailure { Log.w(TAG, "$captureClassName no-arg builder unavailable", it) }
         }
 
+        // Last resort: IBinder constructor with null token (some ROMs treat null as default display)
+        constructors.filter { ctor ->
+            ctor.parameterTypes.size == 1 && IBinder::class.java.isAssignableFrom(ctor.parameterTypes[0])
+        }.forEach { ctor ->
+            runCatching {
+                Log.i(TAG, "$captureClassName builder: trying null token fallback")
+                @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
+                return ctor.newInstance(null as IBinder?)
+            }.onFailure { Log.w(TAG, "$captureClassName null-token builder threw", it) }
+        }
+
+        val ctorSigs = constructors.joinToString { ctor ->
+            ctor.parameterTypes.joinToString(prefix = "(", postfix = ")") { it.name }
+        }
+        val tokenDetail = tokenError?.let { "; token: $it" } ?: ""
         throw IllegalStateException(
-            "No usable $captureClassName DisplayCaptureArgs.Builder constructor: " +
-                constructors.joinToString { ctor ->
-                    ctor.parameterTypes.joinToString(prefix = "(", postfix = ")") { it.name }
-                }
+            "No usable $captureClassName DisplayCaptureArgs.Builder constructor: $ctorSigs$tokenDetail"
         )
     }
 

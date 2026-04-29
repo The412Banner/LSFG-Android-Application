@@ -1,8 +1,11 @@
 package com.lsfg.android.session
 
 import android.graphics.Bitmap
+import android.graphics.PixelFormat
 import android.hardware.HardwareBuffer
+import android.hardware.display.DisplayManager
 import android.content.Intent
+import android.media.ImageReader
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
@@ -59,6 +62,7 @@ class RootCaptureService : RootService() {
         ) {
             var privilegedError: String? = null
             val captureFrame: () -> HardwareBuffer?
+            var captureCleanup: (() -> Unit) = {}
 
             val privileged = runCatching {
                 PrivilegedScreenCapture(width, height, targetUid, allowNoUidFilter = true)
@@ -72,19 +76,26 @@ class RootCaptureService : RootService() {
             } else {
                 val bitmapFn = buildBitmapCaptureFn(width, height)
                 if (bitmapFn != null) {
-                    Log.i(TAG, "PrivilegedScreenCapture unavailable ($privilegedError); using SurfaceControl.screenshot() fallback")
+                    Log.i(TAG, "PrivilegedScreenCapture unavailable; using SurfaceControl.screenshot() fallback")
                     captureFrame = bitmapFn
                 } else {
-                    callback.onError("Root capture unavailable: $privilegedError; SurfaceControl.screenshot() not found")
-                    running.set(false)
-                    return
+                    val vd = buildVirtualDisplayCapture(width, height)
+                    if (vd != null) {
+                        Log.i(TAG, "PrivilegedScreenCapture unavailable; using VirtualDisplay fallback")
+                        captureFrame = vd.first
+                        captureCleanup = vd.second
+                    } else {
+                        callback.onError("Root capture unavailable: $privilegedError; no fallback capture path succeeded")
+                        running.set(false)
+                        return
+                    }
                 }
             }
 
             var lastFrameNs = 0L
             val targetPeriodNs = periodMs * 1_000_000L
             var frameLogCount = 0
-            while (running.get()) {
+            try { while (running.get()) {
                 val started = SystemClock.uptimeMillis()
                 val hb = runCatching { captureFrame() }
                     .onFailure {
@@ -122,6 +133,31 @@ class RootCaptureService : RootService() {
                         break
                     }
                 }
+            } } finally { captureCleanup() }
+        }
+
+        private fun buildVirtualDisplayCapture(width: Int, height: Int): Pair<() -> HardwareBuffer?, () -> Unit>? {
+            return try {
+                val dm = this@RootCaptureService.getSystemService(DisplayManager::class.java)
+                    ?: return null
+                val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+                val vd = dm.createVirtualDisplay(
+                    "lsfg-root-vd", width, height,
+                    /* densityDpi = */ 320,
+                    reader.surface,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                ) ?: run { reader.close(); return null }
+                Log.i(TAG, "VirtualDisplay capture created ${width}x${height}")
+                Pair(
+                    {
+                        val img = reader.acquireLatestImage() ?: return@Pair null
+                        try { img.hardwareBuffer } finally { img.close() }
+                    },
+                    { vd.release(); reader.close() },
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "VirtualDisplay capture failed: ${e.message}")
+                null
             }
         }
 
