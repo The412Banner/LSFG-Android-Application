@@ -1258,6 +1258,7 @@ void blitOutputToWindow(const AhbImage &out, bool allowGpuPost = true) {
         const uint32_t sampleW = std::min<uint32_t>(desc.width, 32);
         const uint32_t sampleH = std::min<uint32_t>(desc.height, 18);
         uint64_t lumaSum = 0;
+        uint64_t alphaSum = 0;
         uint32_t samples = 0;
         for (uint32_t sy = 0; sy < sampleH; ++sy) {
             const uint32_t y = sampleH > 1 ? (sy * (desc.height - 1)) / (sampleH - 1) : 0;
@@ -1265,14 +1266,16 @@ void blitOutputToWindow(const AhbImage &out, bool allowGpuPost = true) {
                 const uint32_t x = sampleW > 1 ? (sx * (desc.width - 1)) / (sampleW - 1) : 0;
                 const uint8_t *p = srcBytes + y * srcStrideBytes + x * 4;
                 lumaSum += (77 * p[0] + 150 * p[1] + 29 * p[2]) >> 8;
+                alphaSum += p[3];
                 samples++;
             }
         }
-        const uint32_t avgLuma = samples > 0 ? static_cast<uint32_t>(lumaSum / samples) : 0;
+        const uint32_t avgLuma  = samples > 0 ? static_cast<uint32_t>(lumaSum  / samples) : 0;
+        const uint32_t avgAlpha = samples > 0 ? static_cast<uint32_t>(alphaSum / samples) : 0;
         if (g.blitLogCount.fetch_add(1, std::memory_order_relaxed) < 12) {
-            LOGI("blit #%u src=%ux%u stride=%u avgLuma=%u outWindow=%ux%u",
+            LOGI("blit #%u src=%ux%u stride=%u avgLuma=%u avgAlpha=%u outWindow=%ux%u",
                  blitLogIndex + 1, desc.width, desc.height, desc.stride,
-                 avgLuma, g.outWidth, g.outHeight);
+                 avgLuma, avgAlpha, g.outWidth, g.outHeight);
         }
     }
 
@@ -1327,6 +1330,12 @@ void blitOutputToWindow(const AhbImage &out, bool allowGpuPost = true) {
         const uint32_t rowBytes = copyW * 4;
         for (uint32_t y = 0; y < copyH; ++y) {
             std::memcpy(dest + y * dstStrideBytes, src + y * srcStrideBytes, rowBytes);
+            // Force alpha=255 (opaque). LSFG generate shaders do not write the
+            // alpha channel, leaving A=0 in the output AHB. Under Android's
+            // pre-multiplied alpha compositing, A=0 causes every pixel to display
+            // as black regardless of the RGB values (RGB × 0/255 = 0).
+            auto *dp = reinterpret_cast<uint32_t *>(dest + y * dstStrideBytes);
+            for (uint32_t x = 0; x < copyW; ++x) dp[x] |= 0xFF000000u;
         }
         producedW = copyW;
         producedH = copyH;
