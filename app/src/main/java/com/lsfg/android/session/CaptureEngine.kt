@@ -304,6 +304,8 @@ class CaptureEngine(
             // preserve consecutive captures for framegen instead of constantly
             // collapsing to the latest frame during fast camera motion.
             5,
+            android.hardware.HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or
+                    android.hardware.HardwareBuffer.USAGE_GPU_COLOR_OUTPUT
         )
         reader.setOnImageAvailableListener({ r ->
             // In LSFG mode we want temporal continuity more than minimum latency:
