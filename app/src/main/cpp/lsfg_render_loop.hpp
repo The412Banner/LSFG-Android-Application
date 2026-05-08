@@ -170,4 +170,7 @@ void reportShizukuTiming(int64_t timestampNs,
                          int64_t frameTimeNs,
                          int64_t pacingJitterNs);
 
+double getAverageQueueMs();
+double getAverageLatencyMs();
+
 } // namespace lsfg_android

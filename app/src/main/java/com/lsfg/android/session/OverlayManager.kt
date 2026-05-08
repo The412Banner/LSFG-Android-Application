@@ -444,7 +444,9 @@ class OverlayManager(private val ctx: Context) {
 
     fun updateFps(capturedFps: Float, postedFps: Float) {
         val v = fpsView ?: return
-        val text = "real ${"%.1f".format(capturedFps)} fps · total ${"%.1f".format(postedFps)} fps"
+        val queueMs = runCatching { NativeBridge.getAverageQueueMs() }.getOrDefault(0.0)
+        val latencyMs = runCatching { NativeBridge.getAverageLatencyMs() }.getOrDefault(0.0)
+        val text = "real ${"%.1f".format(capturedFps)} fps · total ${"%.1f".format(postedFps)} fps (latency: ${"%.1f".format(latencyMs)} ms · queue: ${"%.1f".format(queueMs)} ms)"
         v.post { v.text = text }
     }
 
@@ -458,7 +460,7 @@ class OverlayManager(private val ctx: Context) {
 
     fun pushFrameGraphSample(realFps: Float, generatedFps: Float) {
         val g = graphView ?: return
-        g.post { g.pushSample(realFps, generatedFps) }
+        g.post { g.pushSample(realFps, generatedFps, realFps + generatedFps) }
     }
 
     /**

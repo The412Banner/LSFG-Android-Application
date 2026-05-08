@@ -204,6 +204,18 @@ Java_com_lsfg_android_session_NativeBridge_getUniqueCaptureCount(
     return static_cast<jlong>(lsfg_android::getUniqueCaptureCount());
 }
 
+extern "C" JNIEXPORT jdouble JNICALL
+Java_com_lsfg_android_session_NativeBridge_getAverageQueueMs(
+        JNIEnv * /*env*/, jobject /*thiz*/) {
+    return static_cast<jdouble>(lsfg_android::getAverageQueueMs());
+}
+
+extern "C" JNIEXPORT jdouble JNICALL
+Java_com_lsfg_android_session_NativeBridge_getAverageLatencyMs(
+        JNIEnv * /*env*/, jobject /*thiz*/) {
+    return static_cast<jdouble>(lsfg_android::getAverageLatencyMs());
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_com_lsfg_android_session_NativeBridge_getRecentPostIntervalsNs(
         JNIEnv *env, jobject /*thiz*/, jlongArray outArray) {

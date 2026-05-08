@@ -257,6 +257,9 @@ struct State {
     std::atomic<int64_t> profileSnapshotWaitIdleNs{0};
     std::atomic<int64_t> profileSnapshotBlitNs{0};
     std::atomic<int64_t> profileSnapshotTotalNs{0};
+    std::atomic<int64_t> profileSnapshotQueueNs{0};
+    std::atomic<int64_t> profileSnapshotLatencyNs{0};
+    std::atomic<int64_t> profileSnapshotBlitCount{0};
     std::atomic<int64_t> profileSnapshotSamples{0};
     std::atomic<bool> shizukuTimingEnabled{false};
     std::atomic<int64_t> shizukuSampleTimestampNs{0};
@@ -1779,6 +1782,9 @@ void workerThread() {
         int64_t waitIdleNs= 0;
         int64_t blitNs    = 0;
         int64_t totalNs   = 0;
+        int64_t queueNs   = 0;
+        int64_t captureToDisplayNs = 0;
+        uint32_t blitCount = 0;
         uint32_t samples  = 0;
     } prof{};
     constexpr uint32_t kProfileWindow = 60;
@@ -1820,6 +1826,8 @@ void workerThread() {
             g.pending.pop_front();
         }
         const auto frameWorkStartedAt = State::Clock::now();
+        prof.queueNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
+            frameWorkStartedAt - pendingFrame.queuedAt).count();
         AHardwareBuffer *ahb = pendingFrame.ahb;
         if (ahb == nullptr) continue;
 
@@ -1984,11 +1992,19 @@ void workerThread() {
             // calls — excludes pacing sleep_until() time, which is idle, not
             // work. Reset each iteration; consumed by the profile logger below.
             int64_t blitWorkNsThisFrame = 0;
-            auto timedBlit = [&blitWorkNsThisFrame](const AhbImage &out) {
+            auto timedBlit = [&blitWorkNsThisFrame, &pendingFrame, &prof](const AhbImage &out) {
                 const auto t0 = State::Clock::now();
                 blitOutputToWindow(out);
+                const auto t1 = State::Clock::now();
                 blitWorkNsThisFrame += std::chrono::duration_cast<
-                    std::chrono::nanoseconds>(State::Clock::now() - t0).count();
+                    std::chrono::nanoseconds>(t1 - t0).count();
+
+                const uint64_t postTimeNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    t1.time_since_epoch()).count();
+                if (postTimeNs > pendingFrame.captureTimestampNs) {
+                    prof.captureToDisplayNs += (postTimeNs - pendingFrame.captureTimestampNs);
+                }
+                prof.blitCount++;
             };
 
             State::Clock::duration captureInterval = State::Clock::duration::zero();
@@ -2187,15 +2203,19 @@ void workerThread() {
                 const double n = static_cast<double>(prof.samples);
                 const double avgWaitIdleMs = (prof.waitIdleNs / n) / 1'000'000.0;
                 const double avgWallEndMs  = (prof.totalNs    / n) / 1'000'000.0;
+                const double avgQueueMs    = (prof.queueNs    / n) / 1'000'000.0;
+                const double avgLatencyMs  = prof.blitCount > 0 ? (prof.captureToDisplayNs / static_cast<double>(prof.blitCount)) / 1'000'000.0 : 0.0;
                 const uint64_t hits = g.cacheHits.exchange(0, std::memory_order_relaxed);
                 const uint64_t misses = g.cacheMisses.exchange(0, std::memory_order_relaxed);
-                LOGW("frame profile (avg over %u): copy=%.2fms present=%.2fms waitIdle=%.2fms blitWork=%.2fms wallEnd=%.2fms cache_hits=%llu cache_misses=%llu (mult=%d)",
+                LOGW("frame profile (avg over %u): copy=%.2fms present=%.2fms waitIdle=%.2fms blitWork=%.2fms wallEnd=%.2fms queue=%.2fms latency=%.2fms cache_hits=%llu cache_misses=%llu (mult=%d)",
                      prof.samples,
                      (prof.copyNs / n)     / 1'000'000.0,
                      (prof.presentNs / n)  / 1'000'000.0,
                      avgWaitIdleMs,
                      (prof.blitNs / n)     / 1'000'000.0,
                      avgWallEndMs,
+                     avgQueueMs,
+                     avgLatencyMs,
                      static_cast<unsigned long long>(hits),
                      static_cast<unsigned long long>(misses),
                      g.multiplier);
@@ -2206,6 +2226,9 @@ void workerThread() {
                 g.profileSnapshotWaitIdleNs.store(prof.waitIdleNs, std::memory_order_relaxed);
                 g.profileSnapshotBlitNs.store(prof.blitNs, std::memory_order_relaxed);
                 g.profileSnapshotTotalNs.store(prof.totalNs, std::memory_order_relaxed);
+                g.profileSnapshotQueueNs.store(prof.queueNs, std::memory_order_relaxed);
+                g.profileSnapshotLatencyNs.store(prof.captureToDisplayNs, std::memory_order_relaxed);
+                g.profileSnapshotBlitCount.store(prof.blitCount, std::memory_order_relaxed);
                 g.profileSnapshotSamples.store(prof.samples, std::memory_order_relaxed);
                 prof = ProfileAccum{};
             }
@@ -2605,6 +2628,20 @@ uint64_t getPostedFrameCount() {
 
 uint64_t getUniqueCaptureCount() {
     return g.uniqueCaptures.load(std::memory_order_relaxed);
+}
+
+double getAverageQueueMs() {
+    const int64_t samples = g.profileSnapshotSamples.load(std::memory_order_relaxed);
+    if (samples <= 0) return 0.0;
+    const int64_t queueNs = g.profileSnapshotQueueNs.load(std::memory_order_relaxed);
+    return (static_cast<double>(queueNs) / samples) / 1'000'000.0;
+}
+
+double getAverageLatencyMs() {
+    const int64_t blitCount = g.profileSnapshotBlitCount.load(std::memory_order_relaxed);
+    if (blitCount <= 0) return 0.0;
+    const int64_t latencyNs = g.profileSnapshotLatencyNs.load(std::memory_order_relaxed);
+    return (static_cast<double>(latencyNs) / blitCount) / 1'000'000.0;
 }
 
 uint32_t getProfileWindowNs(int64_t *out, uint32_t cap) {

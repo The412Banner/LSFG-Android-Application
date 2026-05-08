@@ -151,6 +151,16 @@ object NativeBridge {
     external fun getUniqueCaptureCount(): Long
 
     /**
+     * Average native queue residency time in milliseconds for the last completed profiling window.
+     */
+    external fun getAverageQueueMs(): Double
+
+    /**
+     * Average end-to-end latency in milliseconds (capture-to-display) for the last completed profiling window.
+     */
+    external fun getAverageLatencyMs(): Double
+
+    /**
      * Fills [outIntervalsNs] with the nanosecond intervals between consecutive
      * overlay posts, newest-first. Returns the number of intervals actually
      * written (may be fewer than the array length if the session is young).
