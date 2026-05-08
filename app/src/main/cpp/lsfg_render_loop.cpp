@@ -28,6 +28,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <unordered_map>
+#include <dlfcn.h>
 
 #include "crash_reporter.hpp"
 
@@ -39,6 +41,41 @@
 namespace lsfg_android {
 
 namespace {
+
+typedef int (*PFN_AHardwareBuffer_getId)(const AHardwareBuffer*, uint64_t*);
+static PFN_AHardwareBuffer_getId pfnGetAhbId = nullptr;
+static bool ahbGetIdAttempted = false;
+
+uint64_t getAhbId(AHardwareBuffer* ahb) {
+    if (!ahbGetIdAttempted) {
+        void* lib = dlopen("libandroid.so", RTLD_NOW);
+        if (lib) pfnGetAhbId = (PFN_AHardwareBuffer_getId)dlsym(lib, "AHardwareBuffer_getId");
+        if (pfnGetAhbId) {
+            LOGW("AHardwareBuffer_getId dynamically loaded successfully from libandroid.so");
+        } else {
+            LOGW("AHardwareBuffer_getId not found in libandroid.so (API < 31). Falling back to pointer hashing.");
+        }
+        ahbGetIdAttempted = true;
+    }
+    uint64_t id = 0;
+    if (pfnGetAhbId) {
+        int rc = pfnGetAhbId(ahb, &id);
+        if (rc == 0) {
+            static int successLogCount = 0;
+            if (successLogCount < 10) {
+                LOGW("AHardwareBuffer_getId succeeded: id=%llu (ptr=%p, logCount=%d)", 
+                     (unsigned long long)id, static_cast<void*>(ahb), successLogCount++);
+            }
+            return id;
+        }
+        static int failLogCount = 0;
+        if (failLogCount < 5) {
+            LOGW("AHardwareBuffer_getId failed: rc=%d (ptr=%p, logCount=%d). Falling back to pointer hashing.", 
+                 rc, static_cast<void*>(ahb), failLogCount++);
+        }
+    }
+    return reinterpret_cast<uint64_t>(ahb);
+}
 
 struct State {
     using Clock = std::chrono::steady_clock;
@@ -105,6 +142,8 @@ struct State {
     // would error too, so passthrough is the right behaviour anyway.
     std::atomic<bool> framegenAutoDisabled{false};
     std::atomic<bool> antiArtifacts{false};
+    std::atomic<uint64_t> cacheHits{0};
+    std::atomic<uint64_t> cacheMisses{0};
     bool npuPostProcessing = false;
     int npuPreset = 0;
     int npuUpscaleFactor = 1;
@@ -162,6 +201,8 @@ struct State {
     bool     lumaGateOpen      = false;
     uint32_t lumaGateDarkCount = 0;
     int64_t  lumaGateStartNs   = 0; // steady_clock ns at first suppressed dark frame
+
+
 
     // Pending frames to process. We acquire a ref on the AHB so it survives
     // beyond the caller's Image.close(). Drained by the worker thread.
@@ -531,7 +572,11 @@ void destroySwapchain() {
     if (g.swap.surface != VK_NULL_HANDLE && g.vk.instance != VK_NULL_HANDLE) {
         // Surface destruction uses the instance-level function. volk populates
         // it globally after volkLoadInstance.
-        vkDestroySurfaceKHR(g.vk.instance, g.swap.surface, nullptr);
+        if (g.vk.pfnDestroySurfaceKHR != nullptr) {
+            g.vk.pfnDestroySurfaceKHR(g.vk.instance, g.swap.surface, nullptr);
+        } else {
+            vkDestroySurfaceKHR(g.vk.instance, g.swap.surface, nullptr);
+        }
         g.swap.surface = VK_NULL_HANDLE;
     }
     g.swap.extent = {0, 0};
@@ -604,7 +649,7 @@ bool createSwapchain() {
 
     // Can our compute queue actually present on this surface?
     VkBool32 canPresent = VK_FALSE;
-    const VkResult suppr = vkGetPhysicalDeviceSurfaceSupportKHR(g.vk.physicalDevice,
+    const VkResult suppr = g.vk.pfnGetPhysicalDeviceSurfaceSupportKHR(g.vk.physicalDevice,
             g.vk.computeFamilyIdx, g.swap.surface, &canPresent);
     LOGI("createSwapchain: surfaceSupport rc=%d canPresent=%d", (int)suppr, (int)canPresent);
     if (suppr != VK_SUCCESS || canPresent != VK_TRUE) {
@@ -615,7 +660,7 @@ bool createSwapchain() {
     }
 
     VkSurfaceCapabilitiesKHR caps{};
-    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g.vk.physicalDevice,
+    if (g.vk.pfnGetPhysicalDeviceSurfaceCapabilitiesKHR(g.vk.physicalDevice,
             g.swap.surface, &caps) != VK_SUCCESS) {
         LOGW("vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed");
         destroySwapchain();
@@ -625,11 +670,11 @@ bool createSwapchain() {
     // Format: prefer RGBA8 UNORM since that's what framegen outputs. Fall back
     // to whatever the driver offers if not present.
     uint32_t fmtCount = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(g.vk.physicalDevice, g.swap.surface,
+    g.vk.pfnGetPhysicalDeviceSurfaceFormatsKHR(g.vk.physicalDevice, g.swap.surface,
                                          &fmtCount, nullptr);
     std::vector<VkSurfaceFormatKHR> fmts(fmtCount);
     if (fmtCount > 0) {
-        vkGetPhysicalDeviceSurfaceFormatsKHR(g.vk.physicalDevice, g.swap.surface,
+        g.vk.pfnGetPhysicalDeviceSurfaceFormatsKHR(g.vk.physicalDevice, g.swap.surface,
                                              &fmtCount, fmts.data());
     }
     VkSurfaceFormatKHR chosen{VK_FORMAT_R8G8B8A8_UNORM, VK_COLORSPACE_SRGB_NONLINEAR_KHR};
@@ -747,11 +792,14 @@ bool createSwapchain() {
 // Returns true on success. On VK_ERROR_OUT_OF_DATE_KHR or _SUBOPTIMAL_KHR the
 // swapchain is marked dirty; the caller's next blit will recreate it.
 bool blitOutputToSwapchain(const AhbImage &src) {
+    // Note: Called with g.mu held from blitOutputToWindow.
     if (g.swap.swapchain == VK_NULL_HANDLE) return false;
     if (src.image == VK_NULL_HANDLE) return false;
     if (g.swap.outOfDate) {
         if (!createSwapchain()) return false;
     }
+
+    if (g.swap.acquireSems.empty()) return false;
 
     // Pick an acquire semaphore from the round-robin pool. Using a single
     // semaphore risks "semaphore already has a pending wait" on fast backs.
@@ -768,6 +816,11 @@ bool blitOutputToSwapchain(const AhbImage &src) {
     }
     if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR) {
         LOGW("vkAcquireNextImageKHR returned %d", (int)ar);
+        return false;
+    }
+
+    if (imageIdx >= g.swap.images.size()) {
+        LOGW("vkAcquireNextImageKHR returned OOB index %u (size %zu)", imageIdx, g.swap.images.size());
         return false;
     }
 
@@ -812,22 +865,46 @@ bool blitOutputToSwapchain(const AhbImage &src) {
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
         0, 0, nullptr, 0, nullptr, 2, pre);
 
-    const VkImageBlit region{
-        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-        .srcOffsets = {{0, 0, 0}, {
-            static_cast<int32_t>(src.extent.width),
-            static_cast<int32_t>(src.extent.height), 1,
-        }},
-        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-        .dstOffsets = {{0, 0, 0}, {
-            static_cast<int32_t>(g.swap.extent.width),
-            static_cast<int32_t>(g.swap.extent.height), 1,
-        }},
-    };
-    g.vk.fn.vkCmdBlitImage(cb,
-        src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        g.swap.images[imageIdx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        1, &region, VK_FILTER_LINEAR);
+    static std::atomic<bool> loggedBlitMode{false};
+
+    if (src.extent.width == g.swap.extent.width &&
+        src.extent.height == g.swap.extent.height) {
+        if (!loggedBlitMode.exchange(true, std::memory_order_relaxed)) {
+            LOGW("blitOutputToSwapchain: 1:1 scale detected. Using FAST-PATH vkCmdCopyImage.");
+        }
+        const VkImageCopy region{
+            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .srcOffset = {0, 0, 0},
+            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .dstOffset = {0, 0, 0},
+            .extent = {src.extent.width, src.extent.height, 1},
+        };
+        g.vk.fn.vkCmdCopyImage(cb,
+            src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            g.swap.images[imageIdx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &region);
+    } else {
+        if (!loggedBlitMode.exchange(true, std::memory_order_relaxed)) {
+            LOGW("blitOutputToSwapchain: Scaled output detected (%ux%u -> %ux%u). Using VK_FILTER_LINEAR vkCmdBlitImage.",
+                 src.extent.width, src.extent.height, g.swap.extent.width, g.swap.extent.height);
+        }
+        const VkImageBlit region{
+            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .srcOffsets = {{0, 0, 0}, {
+                static_cast<int32_t>(src.extent.width),
+                static_cast<int32_t>(src.extent.height), 1,
+            }},
+            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .dstOffsets = {{0, 0, 0}, {
+                static_cast<int32_t>(g.swap.extent.width),
+                static_cast<int32_t>(g.swap.extent.height), 1,
+            }},
+        };
+        g.vk.fn.vkCmdBlitImage(cb,
+            src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            g.swap.images[imageIdx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &region, VK_FILTER_LINEAR);
+    }
 
     VkImageMemoryBarrier srcRelease{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -1447,6 +1524,7 @@ void blitOutputToWindow(const AhbImage &out, bool allowGpuPost = true) {
     const bool cpuPostActive = g.npuPostProcessing || g.cpuPostProcessing;
     if (kEnableWsiSwapchain && !cpuPostActive && g.vk.hasSwapchain
             && !g.swap.disabledForSession) {
+        std::lock_guard<std::mutex> lock(g.mu);
         if (g.swap.swapchain == VK_NULL_HANDLE) {
             if (!createSwapchain()) {
                 // Mark disabled so subsequent blits don't spin on the
@@ -1710,25 +1788,12 @@ void workerThread() {
     // so a prior session that crashed or left dark content would be visible to
     // MediaProjection immediately, seeding a dark-feedback loop on the very
     // first captured frame.
-    if (g.outWindow != nullptr) {
-        ANativeWindow_setBuffersGeometry(g.outWindow,
-            static_cast<int32_t>(g.outWidth),
-            static_cast<int32_t>(g.outHeight),
-            WINDOW_FORMAT_RGBA_8888);
-        ANativeWindow_Buffer clearBuf{};
-        if (ANativeWindow_lock(g.outWindow, &clearBuf, nullptr) == 0) {
-            memset(clearBuf.bits, 0,
-                   static_cast<size_t>(clearBuf.stride) *
-                   static_cast<size_t>(clearBuf.height) * 4);
-            ANativeWindow_unlockAndPost(g.outWindow);
-            // The BufferQueue is now bound to a CPU producer for this window.
-            // Any later createSwapchain attempt would fail with
-            // VK_ERROR_NATIVE_WINDOW_IN_USE_KHR — pre-pin the taint so we
-            // don't even try (see createSwapchain for rationale).
-            g.windowCpuProducerLocked = true;
-            LOGI("workerThread: cleared overlay to transparent");
-        }
-    }
+    // Skip CPU clearing here if we want to use the Vulkan swapchain path.
+    // Vulkan will clear the screen much more efficiently when it starts.
+    // If we were to call ANativeWindow_lock() here, the window would be
+    // "poisoned" for the rest of the session, forcing us into the slow
+    // CPU blit fallback.
+
 
     // Drain any frames that were buffered during shader compilation.  Those
     // frames were captured while the overlay may have been dark (stale content
@@ -1759,12 +1824,12 @@ void workerThread() {
         if (ahb == nullptr) continue;
 
         // Wrap the imported AHB (read-only from our perspective) and copy
-        // into the oldest input slot.
+        // into the oldest input slot on-the-fly.
         AhbImage src{};
         const int rc = importAhbImage(g.vk, ahb, src);
         if (rc != kOk) {
             LOGW("importAhbImage failed rc=%d", rc);
-            AHardwareBuffer_release(ahb);
+            AHardwareBuffer_release(ahb); // release queue-enqueue ref
             continue;
         }
 
@@ -1836,6 +1901,7 @@ void workerThread() {
                 continue;
             }
         }
+
         // Post-copy: verify the destination slot was written correctly.
         // Extended to 8 copies to capture the frame-4 failure.
         if (g.framesCopied < 8) {
@@ -2084,18 +2150,7 @@ void workerThread() {
                         deadline = sleepUntilVsyncAligned(deadline, lastPostedAt, step);
                     }
                 }
-                bool backlog = false;
-                {
-                    std::lock_guard<std::mutex> lock(g.mu);
-                    backlog = !g.pending.empty();
-                }
-                if (!backlog && step > State::Clock::duration::zero()) {
-                    // Slow-source path: hold for the real frame's slot so it
-                    // doesn't dominate screen time. Skipped when a new capture is
-                    // already waiting, to avoid growing the backlog.
-                    deadline += step;
-                    deadline = sleepUntilVsyncAligned(deadline, lastPostedAt, step);
-                }
+
                 // Match the Linux layer behaviour: after the generated intermediary
                 // frames, present the actual current frame so fast camera motion gets
                 // re-anchored to the real capture instead of showing only synthetic
@@ -2132,14 +2187,18 @@ void workerThread() {
                 const double n = static_cast<double>(prof.samples);
                 const double avgWaitIdleMs = (prof.waitIdleNs / n) / 1'000'000.0;
                 const double avgWallEndMs  = (prof.totalNs    / n) / 1'000'000.0;
-                LOGI("frame profile (avg over %u): copy=%.2fms present=%.2fms waitIdle=%.2fms blitWork=%.2fms wallEnd=%.2fms (mult=%d outputs=%zu)",
+                const uint64_t hits = g.cacheHits.exchange(0, std::memory_order_relaxed);
+                const uint64_t misses = g.cacheMisses.exchange(0, std::memory_order_relaxed);
+                LOGW("frame profile (avg over %u): copy=%.2fms present=%.2fms waitIdle=%.2fms blitWork=%.2fms wallEnd=%.2fms cache_hits=%llu cache_misses=%llu (mult=%d)",
                      prof.samples,
                      (prof.copyNs / n)     / 1'000'000.0,
                      (prof.presentNs / n)  / 1'000'000.0,
                      avgWaitIdleMs,
                      (prof.blitNs / n)     / 1'000'000.0,
                      avgWallEndMs,
-                     g.multiplier, g.outputs.size());
+                     static_cast<unsigned long long>(hits),
+                     static_cast<unsigned long long>(misses),
+                     g.multiplier);
                 // Publish the closed window so the benchmark JNI getter can
                 // surface segment averages without scraping logcat.
                 g.profileSnapshotCopyNs.store(prof.copyNs, std::memory_order_relaxed);
@@ -2158,6 +2217,8 @@ void workerThread() {
             // increment generatedFrames here.
             blitOutputToWindow(g.inSlot[newSlot]);
         }
+
+
     }
 }
 
@@ -2317,16 +2378,19 @@ int initRenderLoop(const char *cacheDir, const RenderLoopConfig &cfg) {
         g.framegenCtxId = -1;
     }
 
+    g.initialized = true;
+
+
+
     g.stopRequested = false;
     g.worker = std::thread(workerThread);
-    g.initialized = true;
     // Do NOT build the swapchain here. At initContext time the overlay's
     // Surface is still owned by the mirror VirtualDisplay producer — it's
     // only detached when setLsfgMode() runs (which retargets the VD to the
     // ImageReader). Creating the swapchain before that point races against
     // ANativeWindow's single-producer rule. The first blitOutputToWindow
     // call after LSFG mode is live builds it lazily.
-    LOGI("Render loop initialised: capture=%ux%u render=%ux%u totalMult=%dx (gen=%d extra) flowScale=%.2f(internal=%.2f) hdr=%d perf=%d npu=%d cpu=%d gpu=%d ctxId=%d",
+    LOGW("Render loop initialised: capture=%ux%u render=%ux%u totalMult=%dx (gen=%d extra) flowScale=%.2f(internal=%.2f) hdr=%d perf=%d npu=%d cpu=%d gpu=%d ctxId=%d",
          cfg.width, cfg.height, renderW, renderH, totalMult, g.multiplier,
          userFlow, g.flowScale,
          (int)g.hdr, (int)g.performanceMode, (int)g.npuPostProcessing,
@@ -2367,16 +2431,16 @@ void setOutputSurface(ANativeWindow *win, uint32_t w, uint32_t h) {
         const bool cpuPostActive = g.npuPostProcessing || g.cpuPostProcessing;
         if (kEnableWsiSwapchain && !cpuPostActive && g.initialized) {
             if (createSwapchain()) {
-                LOGI("Output surface attached %ux%u native=%p path=WSI", w, h, static_cast<void *>(win));
+                LOGW("Output surface attached %ux%u native=%p path=WSI", w, h, static_cast<void *>(win));
             } else {
-                LOGI("Output surface attached %ux%u native=%p path=CPU (swapchain unavailable)", w, h, static_cast<void *>(win));
+                LOGW("Output surface attached %ux%u native=%p path=CPU (swapchain unavailable)", w, h, static_cast<void *>(win));
             }
         } else {
             const char *why = !kEnableWsiSwapchain ? "WSI disabled"
                             : cpuPostActive         ? "post-process=on"
                             : !g.initialized        ? "pre-init"
                                                     : "unknown";
-            LOGI("Output surface attached %ux%u native=%p path=CPU (%s)",
+            LOGW("Output surface attached %ux%u native=%p path=CPU (%s)",
                  w, h, static_cast<void *>(win), why);
         }
     } else {
@@ -2384,7 +2448,7 @@ void setOutputSurface(ANativeWindow *win, uint32_t w, uint32_t h) {
         g.outHeight = 0;
         g.swapWinW = 0;
         g.swapWinH = 0;
-        LOGI("Output surface detached");
+        LOGW("Output surface detached");
     }
 }
 
@@ -2395,7 +2459,7 @@ void pushFrame(AHardwareBuffer *ahb, int64_t timestampNs) {
         AHardwareBuffer_Desc desc{};
         AHardwareBuffer_describe(ahb, &desc);
         if (g.pushLogCount.fetch_add(1, std::memory_order_relaxed) < 30) {
-            LOGI("pushFrame #%u ahb=%ux%u stride=%u fmt=%u usage=0x%llx ts=%lld",
+            LOGW("pushFrame #%u ahb=%ux%u stride=%u fmt=%u usage=0x%llx ts=%lld",
                  pushLogIndex + 1, desc.width, desc.height, desc.stride, desc.format,
                  static_cast<unsigned long long>(desc.usage),
                  static_cast<long long>(timestampNs));
@@ -2494,6 +2558,9 @@ void shutdownRenderLoop() {
         g.gpuPost.reset(g.vk);
         destroyAhbImage(g.vk, g.gpuPostImage);
         for (int i = 0; i < 2; ++i) destroyAhbImage(g.vk, g.inSlot[i]);
+
+
+
         g.npuPost.reset();
         g.cpuPost.reset();
 
