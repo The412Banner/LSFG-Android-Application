@@ -1,4 +1,6 @@
 # LSFG-Android-Application
+[![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/n8S4G2WZQ4)
+
 
 The Android app that drives the patched [`lsfg-vk-android`](../lsfg-vk-android/)
 framegen library. It picks up a user-supplied `Lossless.dll`, extracts the
@@ -321,3 +323,8 @@ The repository root is also MIT, scoped to its top-level files only — see
 copyright holder (THS / Lossless Scaling). This project does not distribute,
 redistribute, or bundle any part of `Lossless.dll`. Users must provide their
 own copy from a legitimately purchased Steam license.
+
+
+## Community
+
+Join our Discord: https://discord.gg/n8S4G2WZQ4
